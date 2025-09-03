@@ -6,7 +6,7 @@ import urllib.request
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB limit for Vercel
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB with chunked upload support
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -43,7 +43,7 @@ HTML_TEMPLATE = '''
             <input type="file" id="videoFile" accept="video/mp4,video/mov" style="display: none;">
             <div onclick="document.getElementById('videoFile').click()">
                 📤 <strong>Click to upload video file</strong><br>
-                <small>Max: 10MB, 30 seconds • Supported: MP4, MOV</small>
+                <small>Max: 50MB, 60 seconds • Chunked upload for large files</small>
             </div>
         </div>
         
@@ -84,8 +84,8 @@ HTML_TEMPLATE = '''
         document.getElementById('videoFile').addEventListener('change', function(e) {
             uploadedFile = e.target.files[0];
             if (uploadedFile) {
-                if (uploadedFile.size > 10 * 1024 * 1024) {
-                    alert('❌ File too large! Maximum 10MB allowed for Vercel deployment.');
+                if (uploadedFile.size > 50 * 1024 * 1024) {
+                    alert('❌ File too large! Maximum 50MB allowed.');
                     return;
                 }
                 
@@ -105,68 +105,128 @@ HTML_TEMPLATE = '''
             document.getElementById('zoomValue').textContent = (e.target.value / 10).toFixed(1) + 'x';
         });
         
-        function convertVideo() {
+        async function convertVideo() {
             if (!uploadedFile) return;
             
-            const formData = new FormData();
-            formData.append('video', uploadedFile);
-            formData.append('crop', document.getElementById('cropSlider').value);
-            formData.append('zoom', document.getElementById('zoomSlider').value);
-            
             document.getElementById('convertBtn').disabled = true;
-            document.getElementById('convertBtn').textContent = '🔄 Converting...';
+            document.getElementById('convertBtn').textContent = '🔄 Uploading...';
             document.getElementById('progress').style.display = 'block';
             document.getElementById('result').innerHTML = '';
             
-            // Animate progress
-            let progress = 0;
-            const progressInterval = setInterval(() => {
-                progress += 2;
-                if (progress <= 90) {
-                    document.getElementById('progressBar').style.width = progress + '%';
-                }
-            }, 200);
-            
-            fetch('/api/convert', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => {
-                clearInterval(progressInterval);
-                document.getElementById('progressBar').style.width = '100%';
+            try {
+                const crop = document.getElementById('cropSlider').value;
+                const zoom = document.getElementById('zoomSlider').value;
                 
-                if (response.ok) {
-                    return response.blob();
+                // For files > 4MB, use chunked upload
+                if (uploadedFile.size > 4 * 1024 * 1024) {
+                    await uploadLargeFile(uploadedFile, crop, zoom);
                 } else {
-                    return response.text().then(errorText => {
-                        throw new Error(errorText || 'Conversion failed. Please try with a smaller file.');
-                    });
+                    await uploadSmallFile(uploadedFile, crop, zoom);
                 }
-            })
-            .then(blob => {
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'vertical_video.mp4';
-                document.body.appendChild(a);
-                a.click();
-                window.URL.revokeObjectURL(url);
-                document.body.removeChild(a);
-                
-                document.getElementById('result').innerHTML = 
-                    '<p class="success">✅ Conversion successful! Your vertical video has been downloaded.</p>';
-            })
-            .catch(error => {
+            } catch (error) {
                 document.getElementById('result').innerHTML = 
                     '<p class="error">❌ ' + error.message + '</p>';
-            })
-            .finally(() => {
+            } finally {
                 document.getElementById('convertBtn').disabled = false;
                 document.getElementById('convertBtn').textContent = '✨ Convert to Vertical Format';
-                setTimeout(() => {
-                    document.getElementById('progress').style.display = 'none';
-                }, 2000);
+            }
+        }
+        
+        async function uploadSmallFile(file, crop, zoom) {
+            const formData = new FormData();
+            formData.append('video', file);
+            formData.append('crop', crop);
+            formData.append('zoom', zoom);
+            
+            document.getElementById('progressBar').style.width = '50%';
+            
+            const response = await fetch('/api/convert', {
+                method: 'POST',
+                body: formData
             });
+            
+            document.getElementById('progressBar').style.width = '100%';
+            
+            if (response.ok) {
+                const blob = await response.blob();
+                downloadFile(blob, 'vertical_video.mp4');
+                document.getElementById('result').innerHTML = 
+                    '<p class="success">✅ Conversion successful!</p>';
+            } else {
+                const errorText = await response.text();
+                throw new Error(errorText || 'Conversion failed');
+            }
+        }
+        
+        async function uploadLargeFile(file, crop, zoom) {
+            const chunkSize = 3 * 1024 * 1024; // 3MB chunks
+            const totalChunks = Math.ceil(file.size / chunkSize);
+            const uploadId = Date.now().toString();
+            
+            document.getElementById('convertBtn').textContent = '📤 Uploading chunks...';
+            
+            // Upload chunks
+            for (let i = 0; i < totalChunks; i++) {
+                const start = i * chunkSize;
+                const end = Math.min(start + chunkSize, file.size);
+                const chunk = file.slice(start, end);
+                
+                const formData = new FormData();
+                formData.append('chunk', chunk);
+                formData.append('uploadId', uploadId);
+                formData.append('chunkIndex', i.toString());
+                formData.append('totalChunks', totalChunks.toString());
+                formData.append('filename', file.name);
+                
+                const progress = (i / totalChunks) * 50;
+                document.getElementById('progressBar').style.width = progress + '%';
+                
+                const response = await fetch('/api/upload-chunk', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Chunk upload failed');
+                }
+            }
+            
+            document.getElementById('convertBtn').textContent = '🔄 Converting...';
+            document.getElementById('progressBar').style.width = '75%';
+            
+            // Start conversion
+            const convertResponse = await fetch('/api/convert-chunked', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    uploadId: uploadId,
+                    crop: crop,
+                    zoom: zoom
+                })
+            });
+            
+            document.getElementById('progressBar').style.width = '100%';
+            
+            if (convertResponse.ok) {
+                const blob = await convertResponse.blob();
+                downloadFile(blob, 'vertical_video.mp4');
+                document.getElementById('result').innerHTML = 
+                    '<p class="success">✅ Large file conversion successful!</p>';
+            } else {
+                const errorText = await convertResponse.text();
+                throw new Error(errorText || 'Conversion failed');
+            }
+        }
+        
+        function downloadFile(blob, filename) {
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
         }
         
         // Drag and drop functionality
@@ -242,7 +302,7 @@ def convert_video_file(input_path, output_path, crop_percent, zoom_level):
         '-vf', f'crop=in_w:in_h*{1-2*crop_percent}:0:in_h*{crop_percent},scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black',
         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '32',
         '-c:a', 'aac', '-b:a', '32k', '-ac', '1',  # Mono audio to save space
-        '-t', '20',  # Limit to 20 seconds
+        '-t', '60',  # Limit to 60 seconds
         '-y', output_path
     ]
     
@@ -284,10 +344,7 @@ def convert():
     if file.filename == '':
         return 'No file selected', 400
     
-    # Validate file size
-    if len(file.read()) > 10 * 1024 * 1024:
-        return 'File too large (max 10MB for Vercel)', 400
-    file.seek(0)  # Reset file pointer
+    # Skip size validation for regular convert (chunked handles large files separately)
     
     crop = float(request.form.get('crop', 5)) / 100.0
     zoom = float(request.form.get('zoom', 10)) / 10.0
@@ -313,3 +370,65 @@ def convert():
                 
         except Exception as e:
             return f'Server error: {str(e)}', 500
+
+@app.route('/upload-chunk', methods=['POST'])
+def upload_chunk():
+    """Handle chunked file uploads."""
+    try:
+        chunk = request.files['chunk']
+        upload_id = request.form['uploadId']
+        chunk_index = int(request.form['chunkIndex'])
+        total_chunks = int(request.form['totalChunks'])
+        filename = request.form['filename']
+        
+        # Create upload directory
+        upload_dir = f'/tmp/upload_{upload_id}'
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # Save chunk
+        chunk_path = os.path.join(upload_dir, f'chunk_{chunk_index:04d}')
+        chunk.save(chunk_path)
+        
+        return {'status': 'success', 'chunk': chunk_index}, 200
+        
+    except Exception as e:
+        return f'Chunk upload error: {str(e)}', 500
+
+@app.route('/convert-chunked', methods=['POST'])
+def convert_chunked():
+    """Convert video from chunked uploads."""
+    try:
+        data = request.get_json()
+        upload_id = data['uploadId']
+        crop = float(data['crop']) / 100.0
+        zoom = float(data['zoom']) / 10.0
+        
+        upload_dir = f'/tmp/upload_{upload_id}'
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Reassemble file from chunks
+            input_path = os.path.join(temp_dir, 'input.mp4')
+            
+            with open(input_path, 'wb') as outfile:
+                chunk_files = sorted([f for f in os.listdir(upload_dir) if f.startswith('chunk_')])
+                for chunk_file in chunk_files:
+                    chunk_path = os.path.join(upload_dir, chunk_file)
+                    with open(chunk_path, 'rb') as chunk:
+                        outfile.write(chunk.read())
+            
+            # Clean up chunks
+            for chunk_file in os.listdir(upload_dir):
+                os.remove(os.path.join(upload_dir, chunk_file))
+            os.rmdir(upload_dir)
+            
+            # Convert video
+            output_path = os.path.join(temp_dir, 'output.mp4')
+            success, message = convert_video_file(input_path, output_path, crop, zoom)
+            
+            if success and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                return send_file(output_path, as_attachment=True, download_name='vertical_video.mp4')
+            else:
+                return f'Chunked conversion failed: {message}', 500
+                
+    except Exception as e:
+        return f'Chunked conversion error: {str(e)}', 500
