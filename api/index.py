@@ -137,8 +137,11 @@ HTML_TEMPLATE = '''
                 
                 if (response.ok) {
                     return response.blob();
+                } else {
+                    return response.text().then(errorText => {
+                        throw new Error(errorText || 'Conversion failed. Please try with a smaller file.');
+                    });
                 }
-                throw new Error('Conversion failed. Please try with a smaller file.');
             })
             .then(blob => {
                 const url = window.URL.createObjectURL(blob);
@@ -231,54 +234,82 @@ def download_ffmpeg():
 def convert_video_file(input_path, output_path, crop_percent, zoom_level):
     """Convert video to vertical format."""
     if not download_ffmpeg():
-        return False
+        return False, "FFmpeg download failed"
     
-    scaled_width = int(1080 * zoom_level)
-    
+    # Simplified conversion for better compatibility
     cmd = [
         '/tmp/ffmpeg', '-i', input_path,
-        '-filter_complex',
-        f'[0:v]crop=in_w:in_h*(1-2*{crop_percent}):0:in_h*{crop_percent},'
-        f'scale={scaled_width}:-1[main];'
-        f'[0:v]crop=in_w:in_h*(1-2*{crop_percent}):0:in_h*{crop_percent},'
-        f'scale=1080:1920:force_original_aspect_ratio=increase,'
-        f'boxblur=10:3,crop=1080:1920[bg];'
-        f'[bg][main]overlay=(W-w)/2:(H-h)/2',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
-        '-c:a', 'aac', '-b:a', '32k', '-t', '30',
+        '-vf', f'crop=in_w:in_h*{1-2*crop_percent}:0:in_h*{crop_percent},scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30',
+        '-c:a', 'aac', '-b:a', '64k', '-ac', '2',
+        '-t', '30',  # Limit to 30 seconds
         '-y', output_path
     ]
     
     try:
-        result = subprocess.run(cmd, timeout=35, capture_output=True)
-        return result.returncode == 0
-    except:
-        return False
+        result = subprocess.run(cmd, timeout=40, capture_output=True, text=True)
+        if result.returncode == 0:
+            return True, "Success"
+        else:
+            return False, f"FFmpeg error: {result.stderr[:200]}"
+    except subprocess.TimeoutExpired:
+        return False, "Conversion timeout (40s limit)"
+    except Exception as e:
+        return False, f"System error: {str(e)}"
 
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
 
+@app.route('/debug')
+def debug():
+    """Debug endpoint to check FFmpeg status."""
+    ffmpeg_exists = os.path.exists('/tmp/ffmpeg')
+    ffmpeg_downloaded = download_ffmpeg()
+    
+    debug_info = {
+        'ffmpeg_exists': ffmpeg_exists,
+        'ffmpeg_downloaded': ffmpeg_downloaded,
+        'tmp_contents': os.listdir('/tmp') if os.path.exists('/tmp') else 'No /tmp directory'
+    }
+    
+    return debug_info
+
 @app.route('/convert', methods=['POST'])
 def convert():
     if 'video' not in request.files:
-        return 'No file', 400
+        return 'No file uploaded', 400
     
     file = request.files['video']
     if file.filename == '':
         return 'No file selected', 400
     
+    # Validate file size
+    if len(file.read()) > 25 * 1024 * 1024:
+        return 'File too large (max 25MB)', 400
+    file.seek(0)  # Reset file pointer
+    
     crop = float(request.form.get('crop', 5)) / 100.0
     zoom = float(request.form.get('zoom', 10)) / 10.0
     
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Save input
-        input_path = os.path.join(temp_dir, secure_filename(file.filename))
-        file.save(input_path)
-        
-        # Convert
-        output_path = os.path.join(temp_dir, 'output.mp4')
-        if convert_video_file(input_path, output_path, crop, zoom):
-            return send_file(output_path, as_attachment=True, download_name='vertical_video.mp4')
-        else:
-            return 'Conversion failed', 500
+        try:
+            # Save input file
+            input_path = os.path.join(temp_dir, 'input.mp4')
+            file.save(input_path)
+            
+            # Check if file was saved properly
+            if not os.path.exists(input_path) or os.path.getsize(input_path) == 0:
+                return 'File upload failed', 400
+            
+            # Convert video
+            output_path = os.path.join(temp_dir, 'output.mp4')
+            success, message = convert_video_file(input_path, output_path, crop, zoom)
+            
+            if success and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                return send_file(output_path, as_attachment=True, download_name='vertical_video.mp4')
+            else:
+                return f'Conversion failed: {message}', 500
+                
+        except Exception as e:
+            return f'Server error: {str(e)}', 500
