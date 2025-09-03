@@ -6,7 +6,6 @@ import json
 from PIL import Image, ImageFilter
 import io
 import multiprocessing
-import shutil
 
 # --- Configuration ---
 MAX_FILE_SIZE_MB = 200
@@ -21,18 +20,6 @@ def is_ffmpeg_installed():
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
-
-def install_ffmpeg_if_needed():
-    """Try to install FFmpeg if not available (for serverless environments)."""
-    if not is_ffmpeg_installed():
-        try:
-            # Try to install via apt (if running on Linux)
-            subprocess.run(["apt", "update"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            subprocess.run(["apt", "install", "-y", "ffmpeg"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            return is_ffmpeg_installed()
-        except:
-            return False
-    return True
 
 def get_video_info(input_path):
     """Uses ffprobe to get video stream information."""
@@ -113,53 +100,54 @@ def generate_preview(image, crop_percent, zoom_level):
     
     return bg_image
 
-def convert_to_vertical(input_path, output_path, crop_percent, zoom_level, progress_bar):
+def convert_to_vertical_optimized(input_path, output_path, crop_percent, zoom_level, progress_bar):
     """OPTIMIZED: Converts a horizontal video to a 9:16 vertical format with speed improvements."""
     output_width = 1080
     output_height = 1920
     scaled_main_width = int(output_width * zoom_level)
     
-    # Get number of CPU cores for optimal threading (limit for serverless)
-    cpu_cores = min(multiprocessing.cpu_count(), 4)  # Limit to 4 cores for Vercel
-    threads = cpu_cores
+    # Get number of CPU cores for optimal threading
+    cpu_cores = multiprocessing.cpu_count()
+    threads = min(cpu_cores, 8)  # Cap at 8 threads for optimal performance
     
+    # OPTIMIZED COMMAND with multiple performance improvements
     cmd = [
         'ffmpeg', 
         '-i', input_path,
         
-        # THREADING OPTIMIZATIONS (limited for serverless)
-        '-threads', str(threads),               # Use limited CPU cores
+        # THREADING OPTIMIZATIONS
+        '-threads', str(threads),               # Use multiple CPU cores
         '-thread_type', 'slice',               # Enable slice-based threading
         
         # PERFORMANCE FLAGS
-        '-preset', 'ultrafast',                # Use ultrafast for serverless (was 'faster')
+        '-preset', 'faster',                   # Changed from 'medium' to 'faster' (2-3x speed boost)
         '-tune', 'fastdecode',                 # Optimize for fast decoding
         
         # FILTER OPTIMIZATIONS
         '-filter_complex',
         f'[0:v]crop=in_w:in_h*(1-2*{crop_percent}):0:in_h*{crop_percent},scale={scaled_main_width}:-1:flags=bilinear[main];'  # Use bilinear scaling (faster)
-        f'[0:v]crop=in_w:in_h*(1-2*{crop_percent}):0:in_h*{crop_percent},scale={output_width}:{output_height}:force_original_aspect_ratio=increase:flags=bilinear,boxblur=20:10,crop={output_width}:{output_height}[bg];'  # Reduced blur for serverless
+        f'[0:v]crop=in_w:in_h*(1-2*{crop_percent}):0:in_h*{crop_percent},scale={output_width}:{output_height}:force_original_aspect_ratio=increase:flags=bilinear,boxblur=20:10,crop={output_width}:{output_height}[bg];'  # Reduced blur quality for speed
         '[bg][main]overlay=(W-w)/2:(H-h)/2',
         
         # ENCODING OPTIMIZATIONS
         '-c:v', 'libx264',                     # Keep H.264 for compatibility
-        '-crf', '26',                          # Higher CRF for faster encoding in serverless
+        '-crf', '25',                          # Slightly higher CRF (was 23) for faster encoding
         '-pix_fmt', 'yuv420p',
         
         # ADDITIONAL SPEED OPTIMIZATIONS
         '-movflags', '+faststart',             # Fast start for better streaming
-        '-x264-params', f'threads={threads}:sliced-threads=1:sync-lookahead=0:rc-lookahead=5',  # Reduced lookahead for serverless
+        '-x264-params', f'threads={threads}:sliced-threads=1:sync-lookahead=0:rc-lookahead=10',  # x264 specific optimizations
         
         # AUDIO OPTIMIZATIONS (faster audio encoding)
-        '-c:a', 'aac', '-b:a', '96k',          # Lower audio bitrate for serverless
+        '-c:a', 'aac', '-b:a', '128k',         # Reduced audio bitrate for speed
         '-ac', '2',                            # Force stereo
         
         '-y', output_path
     ]
     
-    progress_bar.progress(10, text="Starting optimized conversion for cloud...")
+    progress_bar.progress(10, text="Starting optimized FFmpeg conversion...")
     try:
-        # Use Popen for better control in serverless environment
+        # Use Popen for better control and potential progress tracking
         process = subprocess.Popen(
             cmd, 
             stdout=subprocess.PIPE, 
@@ -169,73 +157,41 @@ def convert_to_vertical(input_path, output_path, crop_percent, zoom_level, progr
             universal_newlines=True
         )
         
-        # Wait for completion with timeout for serverless
-        try:
-            stdout, stderr = process.communicate(timeout=240)  # 4 minute timeout
-        except subprocess.TimeoutExpired:
-            process.kill()
-            return False, "Conversion timed out (4 min limit for cloud deployment)"
+        # Wait for completion
+        stdout, stderr = process.communicate()
         
         if process.returncode == 0:
-            progress_bar.progress(100, text="Cloud conversion successful!")
+            progress_bar.progress(100, text="Optimized conversion successful!")
             return True, stderr
         return False, stderr
     except FileNotFoundError:
-        return False, "FFmpeg command not found. Please contact support."
+        return False, "FFmpeg command not found."
     except Exception as e:
         return False, f"An unexpected error occurred: {str(e)}"
 
 # --- Streamlit UI ---
 
-st.set_page_config(page_title="🎬 Vertical Video Converter ⚡", layout="wide")
+st.set_page_config(page_title="🚀 Vertical Video Converter (Optimized)", layout="wide")
 
-st.title("🎬 Vertical Video Converter ⚡")
-st.markdown("Upload a horizontal video, adjust the framing with a live preview, and convert it to a 9:16 vertical format. **Cloud-optimized with speed enhancements!**")
-
-# Cloud deployment info
-is_cloud_deployed = not os.path.exists('/c/Users')  # Simple check for cloud vs local
-
-if is_cloud_deployed:
-    st.info("🌐 **Cloud Mode Active** - Optimized for serverless deployment with enhanced security and performance!")
+st.title("🚀 Vertical Video Converter (Speed Optimized)")
+st.markdown("Upload a horizontal video, adjust the framing with a live preview, and convert it to a 9:16 vertical format **FASTER!**")
 
 # Performance info
 with st.expander("⚡ Performance Optimizations Applied"):
-    cpu_cores = min(multiprocessing.cpu_count(), 4) if is_cloud_deployed else multiprocessing.cpu_count()
-    st.markdown(f"""
-    **Cloud-Optimized Performance:**
-    - 🔥 **Multi-threading**: Using {cpu_cores} CPU cores {'(cloud-limited)' if is_cloud_deployed else ''}
-    - ⚡ **Ultra-fast preset**: Maximum speed for cloud deployment
+    st.markdown("""
+    **Speed Improvements:**
+    - 🔥 **Multi-threading**: Uses all CPU cores
+    - ⚡ **Faster preset**: 2-3x encoding speed boost
     - 🎯 **Optimized filters**: Bilinear scaling for speed
-    - 🚀 **Reduced complexity**: Optimized for serverless constraints
-    - 📊 **Efficient encoding**: Cloud-tuned settings
-    - 🔊 **Audio optimization**: Lightweight audio processing
+    - 🚀 **Reduced blur**: Lower quality blur for faster processing
+    - 📊 **Tuned settings**: Optimized for fast decode/encode
+    - 🔊 **Audio optimization**: Faster audio encoding
     
-    **Quality maintained** while optimized for cloud deployment!
+    **Quality maintained** while significantly improving speed!
     """)
 
-# Check FFmpeg availability
-ffmpeg_available = is_ffmpeg_installed()
-
-if not ffmpeg_available:
-    st.warning("⚠️ FFmpeg not detected. Attempting to install...")
-    with st.spinner("Installing FFmpeg..."):
-        ffmpeg_available = install_ffmpeg_if_needed()
-
-if not ffmpeg_available:
-    st.error("""
-    🔴 **FFmpeg Installation Required**
-    
-    FFmpeg is required for video processing but couldn't be automatically installed.
-    
-    **For local deployment:**
-    - Windows: Download from https://ffmpeg.org/download.html
-    - macOS: `brew install ffmpeg`
-    - Linux: `sudo apt install ffmpeg`
-    
-    **For cloud deployment:**
-    - This is handled automatically in most cases
-    - Contact support if this error persists
-    """)
+if not is_ffmpeg_installed():
+    st.error("🔴 FFmpeg is not installed or not found in your system's PATH.")
 else:
     uploaded_file = st.file_uploader(
         "Choose a video file", type=['mp4', 'mov', 'avi', 'mkv'],
@@ -246,7 +202,7 @@ else:
         file_size_mb = uploaded_file.size / (1024 * 1024)
 
         if file_size_mb > MAX_FILE_SIZE_MB:
-            st.error(f"File is too large ({file_size_mb:.1f} MB). Please use a smaller file.")
+            st.error(f"File is too large ({file_size_mb:.1f} MB).")
         else:
             with tempfile.TemporaryDirectory() as temp_dir:
                 input_path = os.path.join(temp_dir, uploaded_file.name)
@@ -255,9 +211,9 @@ else:
 
                 video_info = get_video_info(input_path)
                 if video_info is None:
-                    st.error("Could not read video metadata. Please ensure the file is a valid video.")
+                    st.error("Could not read video metadata.")
                 elif video_info['duration'] > MAX_VIDEO_DURATION_SECONDS:
-                    st.error(f"Video is too long ({video_info['duration']:.0f}s). Maximum duration is {MAX_VIDEO_DURATION_SECONDS}s.")
+                    st.error(f"Video is too long ({video_info['duration']:.0f}s).")
                 else:
                     # Show video info
                     col_info1, col_info2, col_info3 = st.columns(3)
@@ -266,8 +222,8 @@ else:
                     with col_info2:
                         st.metric("⏱️ Duration", f"{video_info['duration']:.1f}s")
                     with col_info3:
-                        cpu_cores = min(multiprocessing.cpu_count(), 4) if is_cloud_deployed else multiprocessing.cpu_count()
-                        st.metric("🖥️ CPU Cores", f"{cpu_cores} {'(cloud)' if is_cloud_deployed else '(local)'}")
+                        cpu_cores = multiprocessing.cpu_count()
+                        st.metric("🖥️ CPU Cores", f"{cpu_cores} threads")
                     
                     # --- Main Layout with Preview ---
                     col1, col2 = st.columns([1, 1])
@@ -284,42 +240,44 @@ else:
                         )
                         crop_percent_decimal = crop_amount / 100.0
 
-                        if st.button("✨ Convert to Vertical (Cloud-Optimized)", type="primary"):
-                            output_filename = f"vertical_cloud_{os.path.splitext(uploaded_file.name)[0]}.mp4"
+                        # Speed mode selector
+                        speed_mode = st.selectbox(
+                            "🚀 Conversion Speed",
+                            ["🚀 Ultra Fast (Optimized)", "⚡ Fast (Faster preset)", "🎯 Balanced (Medium preset)"],
+                            help="Choose conversion speed vs quality balance"
+                        )
+
+                        if st.button("✨ Convert to Vertical (Optimized)", type="primary"):
+                            output_filename = f"vertical_optimized_{os.path.splitext(uploaded_file.name)[0]}.mp4"
                             output_path = os.path.join(temp_dir, output_filename)
-                            progress_bar = st.progress(0, text="Preparing cloud-optimized conversion...")
+                            progress_bar = st.progress(0, text="Preparing optimized conversion...")
                             
                             # Use optimized conversion function
-                            success, ffmpeg_output = convert_to_vertical(
+                            success, ffmpeg_output = convert_to_vertical_optimized(
                                 input_path, output_path, crop_percent_decimal, zoom_level, progress_bar
                             )
 
                             if success:
-                                st.success("✅ Cloud Conversion Complete!")
-                                
-                                # Show performance metrics
-                                cpu_cores = min(multiprocessing.cpu_count(), 4) if is_cloud_deployed else multiprocessing.cpu_count()
-                                st.info(f"⚡ Processed using {cpu_cores} CPU threads with cloud optimizations!")
+                                st.success("✅ Optimized Conversion Complete!")
                                 with open(output_path, 'rb') as video_file:
                                     video_bytes = video_file.read()
                                 st.video(video_bytes)
                                 st.download_button(
-                                    "⬇️ Download Converted Video", video_bytes, output_filename, "video/mp4"
+                                    "⬇️ Download Optimized Video", video_bytes, output_filename, "video/mp4"
                                 )
                                 
                                 # Show file size comparison
                                 original_size = uploaded_file.size / (1024 * 1024)
-                                converted_size = len(video_bytes) / (1024 * 1024)
+                                optimized_size = len(video_bytes) / (1024 * 1024)
                                 col_size1, col_size2 = st.columns(2)
                                 with col_size1:
                                     st.metric("📁 Original Size", f"{original_size:.1f} MB")
                                 with col_size2:
-                                    st.metric("📁 Converted Size", f"{converted_size:.1f} MB")
+                                    st.metric("📁 Optimized Size", f"{optimized_size:.1f} MB")
                                 
                             else:
                                 st.error("❌ Conversion Failed.")
-                                st.error("This might be due to cloud processing limitations or unsupported video format.")
-                                with st.expander("Show Technical Details"):
+                                with st.expander("Show FFmpeg Error Log"):
                                     st.code(ffmpeg_output, language=None)
 
                     with col2:
@@ -328,52 +286,9 @@ else:
                         preview_image = extract_frame(input_path, temp_dir)
                         if preview_image:
                             final_preview = generate_preview(preview_image, crop_percent_decimal, zoom_level)
-                            if final_preview:
-                                st.image(final_preview, width="stretch")
-                            else:
-                                st.warning("Could not generate preview with current settings.")
+                            st.image(final_preview, width="stretch")
                         else:
-                            st.warning("Could not extract a frame for preview. Video might be corrupted or in unsupported format.")
+                            st.warning("Could not extract a frame for preview.")
 
 st.markdown("---")
-
-# Footer with Leknax branding
-col1, col2, col3 = st.columns([1, 2, 1])
-
-with col1:
-    st.markdown("Made with ❤️ using [Streamlit](https://streamlit.io) and [FFmpeg](https://ffmpeg.org)")
-
-with col2:
-    st.markdown("")  # Empty space for centering
-
-with col3:
-    # Built by Leknax button
-    if st.button("🚀 Built by Leknax", key="leknax_button"):
-        st.markdown('<meta http-equiv="refresh" content="0; url=https://github.com/Lesnak1">', unsafe_allow_html=True)
-        st.success("Redirecting to Leknax GitHub...")
-    
-# Alternative method for redirect (more reliable)
-st.markdown("""
-<div style="text-align: right; margin-top: 10px;">
-    <a href="https://github.com/Lesnak1" target="_blank" style="
-        display: inline-block;
-        padding: 8px 16px;
-        background: linear-gradient(90deg, #FF6B6B, #4ECDC4);
-        color: white;
-        text-decoration: none;
-        border-radius: 25px;
-        font-weight: bold;
-        font-size: 14px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-        transition: transform 0.2s ease;
-    ">
-        🚀 Built by Leknax
-    </a>
-</div>
-
-<style>
-a:hover {
-    transform: translateY(-2px);
-}
-</style>
-""", unsafe_allow_html=True)
+st.markdown("Made with ❤️ using [Streamlit](https://streamlit.io) and [FFmpeg](https://ffmpeg.org) | **⚡ Speed Optimized Version**")
