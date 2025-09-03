@@ -6,7 +6,7 @@ import urllib.request
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024  # 25MB limit
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB limit for Vercel
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -43,7 +43,7 @@ HTML_TEMPLATE = '''
             <input type="file" id="videoFile" accept="video/mp4,video/mov" style="display: none;">
             <div onclick="document.getElementById('videoFile').click()">
                 📤 <strong>Click to upload video file</strong><br>
-                <small>Max: 25MB, 30 seconds • Supported: MP4, MOV</small>
+                <small>Max: 10MB, 30 seconds • Supported: MP4, MOV</small>
             </div>
         </div>
         
@@ -84,8 +84,8 @@ HTML_TEMPLATE = '''
         document.getElementById('videoFile').addEventListener('change', function(e) {
             uploadedFile = e.target.files[0];
             if (uploadedFile) {
-                if (uploadedFile.size > 25 * 1024 * 1024) {
-                    alert('❌ File too large! Maximum 25MB allowed.');
+                if (uploadedFile.size > 10 * 1024 * 1024) {
+                    alert('❌ File too large! Maximum 10MB allowed for Vercel deployment.');
                     return;
                 }
                 
@@ -240,9 +240,9 @@ def convert_video_file(input_path, output_path, crop_percent, zoom_level):
     cmd = [
         '/tmp/ffmpeg', '-i', input_path,
         '-vf', f'crop=in_w:in_h*{1-2*crop_percent}:0:in_h*{crop_percent},scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30',
-        '-c:a', 'aac', '-b:a', '64k', '-ac', '2',
-        '-t', '30',  # Limit to 30 seconds
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '32',
+        '-c:a', 'aac', '-b:a', '32k', '-ac', '1',  # Mono audio to save space
+        '-t', '20',  # Limit to 20 seconds
         '-y', output_path
     ]
     
@@ -285,8 +285,8 @@ def convert():
         return 'No file selected', 400
     
     # Validate file size
-    if len(file.read()) > 25 * 1024 * 1024:
-        return 'File too large (max 25MB)', 400
+    if len(file.read()) > 10 * 1024 * 1024:
+        return 'File too large (max 10MB for Vercel)', 400
     file.seek(0)  # Reset file pointer
     
     crop = float(request.form.get('crop', 5)) / 100.0
