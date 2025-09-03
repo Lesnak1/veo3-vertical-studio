@@ -1,12 +1,13 @@
 {
-  "version": 2,
   "builds": [
     {
       "src": "app.py",
       "use": "@vercel/python",
       "config": {
         "maxLambdaSize": "50mb",
-        "runtime": "python3.9"
+        "runtime": "python3.9",
+        "maxDuration": 300,
+        "memory": 1024
       }
     }
   ],
@@ -18,11 +19,5 @@
   ],
   "env": {
     "PYTHONPATH": "/var/task"
-  },
-  "functions": {
-    "app.py": {
-      "maxDuration": 300,
-      "memory": 1024
-    }
   }
 }
