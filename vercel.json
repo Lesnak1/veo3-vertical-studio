@@ -1,14 +1,14 @@
 {
-  "functions": {
-    "app.py": {
-      "runtime": "python3.9",
-      "maxDuration": 60,
-      "memory": 1024
+  "builds": [
+    {
+      "src": "app.py",
+      "use": "@vercel/python"
     }
-  },
-  "build": {
-    "env": {
-      "PYTHONPATH": "/var/task"
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "app.py"
     }
-  }
+  ]
 }
