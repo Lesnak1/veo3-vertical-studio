@@ -8,8 +8,8 @@ import io
 import urllib.request
 
 # --- Configuration ---
-MAX_FILE_SIZE_MB = 100  # Reduced for serverless
-MAX_VIDEO_DURATION_SECONDS = 180  # Reduced to 3 minutes for serverless
+MAX_FILE_SIZE_MB = 50   # Further reduced for Hobby plan
+MAX_VIDEO_DURATION_SECONDS = 60  # 1 minute for Hobby plan limits
 
 # FFmpeg static binary URL for serverless deployment
 FFMPEG_URL = "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/linux-x64"
@@ -135,13 +135,13 @@ def convert_to_vertical(input_path, output_path, crop_percent, zoom_level, progr
     
     progress_bar.progress(10, text="Processing video in cloud...")
     try:
-        process = subprocess.run(cmd, capture_output=True, text=True, timeout=180)  # 3 minute timeout
+        process = subprocess.run(cmd, capture_output=True, text=True, timeout=50)  # 50 second timeout for Hobby plan
         if process.returncode == 0:
             progress_bar.progress(100, text="Cloud processing complete!")
             return True, process.stderr
         return False, process.stderr
     except subprocess.TimeoutExpired:
-        return False, "Processing timed out (3 min limit)"
+        return False, "Processing timed out (Hobby plan 1 min limit)"
     except Exception as e:
         return False, f"Processing error: {str(e)}"
 
@@ -155,7 +155,7 @@ st.info("🌐 **Serverless Mode** - Optimized for fast cloud processing with aut
 
 uploaded_file = st.file_uploader(
     "Choose a video file", type=['mp4', 'mov', 'avi', 'mkv'],
-    help=f"Max file size: {MAX_FILE_SIZE_MB}MB. Max duration: {MAX_VIDEO_DURATION_SECONDS // 60} minutes."
+    help=f"Max file size: {MAX_FILE_SIZE_MB}MB. Max duration: {MAX_VIDEO_DURATION_SECONDS} seconds."
 )
 
 if uploaded_file is not None:
